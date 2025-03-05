@@ -40,9 +40,11 @@
 import os
 import torch
 import wandb
-import matplotlib.pyplot as plt
+from datetime import datetime
+# import matplotlib.pyplot as plt
 from torch.nn import L1Loss
 from tqdm import tqdm
+import nibabel as nib
 
 # === MONAI/generative imports
 from monai.transforms import (
@@ -330,11 +332,11 @@ use_combined = True  # set True if you want to combine two datasets
 
 if use_combined:
     # Example: combine BCP and CP
+    print('Using combined dataset')
     bcp_dataset = BCPDataset(tsv_path="/home/andim/projects/def-bedelb/andim/hc-bcp/participants.tsv")
     cp_dataset = CPDataset(tsv_path="/home/andim/projects/def-bedelb/andim/hc-calgary-preschool/participants.tsv")
-    # combined_dataset = CombinedDataset(bcp_dataset, cp_dataset)
-    # For the snippet, let's just assume we had a CPDataset:
-    combined_dataset = CombinedDataset(bcp_dataset, bcp_dataset)  # dummy example combining BCP with itself
+    
+    combined_dataset = CombinedDataset(bcp_dataset, cp_dataset) 
     train_loader = DataLoader(combined_dataset, batch_size=2, shuffle=True, num_workers=2)
 else:
     # BCP only
@@ -404,14 +406,16 @@ autoencoder_warm_up_n_epochs = 5
 # --------------------------------------------------
 # 3) Initialize wandb
 # --------------------------------------------------
+today_str = datetime.now().strftime("%Y%m%d_%H%M%S") 
 scratch_dir = os.environ.get("SCRATCH", "/scratch")  # Use $SCRATCH environment variable
 original_root_dir = os.path.join(scratch_dir, 'COMBINED', 'exp_vq_vae_fold0')
 wandb_dir = os.path.join(original_root_dir, "wandb_logs")
 os.makedirs(wandb_dir, exist_ok=True)
 wandb.init(
-    project="MONAI_3D_LDM", 
+    project="MONAI_3D_LDM-VQ-VAE", 
+    name=f"experiment-{today_str}",
     mode = 'offline',
-    save_dir=wandb_dir,
+    dir=wandb_dir,
     config={
         "batch_size": 2,
         "lr": 1e-4,
