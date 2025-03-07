@@ -41,7 +41,7 @@ import os
 import torch
 import wandb
 from datetime import datetime
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 from torch.nn import L1Loss
 from tqdm import tqdm
 import nibabel as nib
@@ -74,189 +74,37 @@ import pandas as pd
 import glob
 from torch.utils.data import Dataset
 
-def create_bcp_records(tsv_path: str):
-    """
-    Parse the participants.tsv to collect NIfTI file paths plus subject/session info.
-    Returns a list of dicts, each with:
-      {
-        "image": "/path/to/some_stripped.nii.gz",
-        "subject_id": "sub-XXX",
-        "session_id": "ses-YYY",
-      }
-    """
-    participants = pd.read_csv(tsv_path, sep="\t")
-
-    data_dicts = []
-    base_dir = os.path.dirname(tsv_path)
-    runs_to_include_pth = os.path.join(base_dir, 'runs_to_include.csv')
+def save_and_log_image(epoch, images, reconstruction, subject_id, session_id, save_dir):
+    """Save slices as a PNG and log to Weights & Biases (W&B) with subject/session info."""
+    idx = 0  # Use the first sample in batch
+    input_np = images[idx, 0].detach().cpu().numpy()
+    rec_np = reconstruction[idx, 0].detach().cpu().numpy()
     
-    runs_to_include = pd.read_csv(runs_to_include_pth)
-
-    for _, row in participants.iterrows():
-        subject_id = row["participant_id"]
-        # Handle multiple sessions if the cell is comma-separated
-        sessions = row["sessions"].split(",")
-        # print(subject_id)
-        # print(sessions)
-        if subject_id in runs_to_include['participant_id'].to_list():
-            for session in sessions:
-                session_id = session.strip()
-                if session_id in runs_to_include[runs_to_include['participant_id']==subject_id]['session_id'].to_list():
-                    anat_dir = os.path.join(
-                        base_dir,
-                        f"n4_bias_correction/{subject_id}/{session_id}/anat/"
-                    )
-                    if not os.path.exists(anat_dir):
-                        print(f"Missing directory: {anat_dir}")
-                        continue
-
-                    # Collect all stripped T1 files
-                    stripped_files = glob.glob(os.path.join(anat_dir, "*_T1w_stripped_n4.nii.gz"))
-                    if not stripped_files:
-                        print(f"No stripped files found in {anat_dir}")
-                        continue
-
-                    # Choose the latest run (if run is used in naming)
-                    latest_file = sorted(
-                        stripped_files,
-                        key=lambda x: int(x.split("_run-")[1].split("_")[0])
-                        if "_run-" in x else 0
-                    )[-1]
-
-                    data_dicts.append({
-                        "data": latest_file,
-                        "subject_id": subject_id,
-                        "session_id": session_id
-                    })
-
-    print(f"Found {len(data_dicts)} valid entries in {tsv_path}")
-    return data_dicts
-
-def create_cp_records(tsv_path: str):
-    """
-    Parse the participants.tsv to collect NIfTI file paths plus subject/session info.
-    Returns a list of dicts, each with:
-      {
-        "image": "/path/to/some_stripped_n4.nii.gz",
-        "subject_id": "sub-XXX",
-        "session_id": "ses-YYY",
-      }
-    """
-    participants = pd.read_csv(tsv_path, sep="\t")
-
-    data_dicts = []
-    base_dir = os.path.dirname(tsv_path)
-    for _, row in participants.iterrows():
-        subject_id = row["participant_id"]
-        # Handle multiple sessions if the cell is comma-separated
-        sessions = row["sessions"].split(",")
-
-        for session in sessions:
-            session_id = session.strip()
-            anat_dir = os.path.join(
-                base_dir,
-                f"n4_bias_correction/{subject_id}/{session_id}/anat/"
-            )
-            if not os.path.exists(anat_dir):
-                print(f"Missing directory: {anat_dir}")
-                continue
-
-            # Collect all stripped T1 files
-            stripped_files = glob.glob(os.path.join(anat_dir, "*_T1w_stripped_n4.nii.gz"))
-            if not stripped_files:
-                print(f"No stripped files found in {anat_dir}")
-                continue
-
-            # Choose the latest run (if run is used in naming)
-            latest_file = sorted(
-                stripped_files,
-                key=lambda x: int(x.split("_run-")[1].split("_")[0])
-                if "_run-" in x else 0
-            )[-1]
-
-            data_dicts.append({
-                "data": latest_file,
-                "subject_id": subject_id,
-                "session_id": session_id
-            })
-
-    print(f"Found {len(data_dicts)} valid entries in {tsv_path}")
-    return data_dicts
-
-def threshold_at_zero(x):
-    return x > 0
-
-def get_monai_transforms(final_size=(64, 128, 128)):
-    return Compose([
-        LoadImaged(keys="data"),
-        EnsureChannelFirstd(keys="data"),
-        Orientationd(keys="data", axcodes="RAS"),
-        Spacingd(keys="data", pixdim=(1.0, 1.0, 1.0), mode="bilinear"),
-        CropForegroundd(keys="data", source_key="data", select_fn=threshold_at_zero),
-        Resized(keys="data", spatial_size=final_size, mode=["area"]),
-        ScaleIntensityRangePercentilesd(keys="data", lower=0, upper=99.5, b_min=0, b_max=1),
-    ])
-
-class BCPDataset(Dataset):
-    """
-    Simple BCP dataset that yields a dict {"data": Tensor, "subject_id": str, "session_id": str}.
-    """
-    def __init__(self, tsv_path, transform=None):
-        super().__init__()
-        self.data_dicts = create_bcp_records(tsv_path)
-        self.transform = transform if transform else get_monai_transforms()
-
-    def __len__(self):
-        return len(self.data_dicts)
-
-    def __getitem__(self, idx):
-        data_item = self.data_dicts[idx]
-        output = self.transform(data_item)
-        # Check for NaNs in the output tensor
-        assert not torch.isnan(output["data"]).any(), f"NaN values found in 'data' for subject {data_item['subject_id']}"
-        return self.transform(self.data_dicts[idx])
+    # Pick three z-slices to visualize
+    zdim = input_np.shape[-1]
+    slices_to_show = [zdim // 4, zdim // 2, 3 * zdim // 4]
     
-class CPDataset(Dataset):
-    """
-    Simple BCP dataset that yields a dict {"data": Tensor, "subject_id": str, "session_id": str}.
-    """
-    def __init__(self, tsv_path, transform=None):
-        super().__init__()
-        self.data_dicts = create_cp_records(tsv_path)
-        self.transform = transform if transform else get_monai_transforms()
-
-    def __len__(self):
-        return len(self.data_dicts)
-
-    def __getitem__(self, idx):
-        data_item = self.data_dicts[idx]
-        output = self.transform(data_item)
-        # Check for NaNs in the output tensor
-        assert not torch.isnan(output["data"]).any(), f"NaN values found in 'data' for subject {data_item['subject_id']}"
-        return self.transform(self.data_dicts[idx])
-
-# (Optional) Another dataset e.g. CPDataset omitted for brevity
-# class CPDataset(Dataset):
-#     ...
-
-class CombinedDataset(Dataset):
-    """
-    Combine two separate Dataset objects into a single dataset.
-    """
-    def __init__(self, dataset1, dataset2):
-        self.dataset1 = dataset1
-        self.dataset2 = dataset2
-        self.len1 = len(self.dataset1)
-        self.len2 = len(self.dataset2)
-
-    def __len__(self):
-        return self.len1 + self.len2
-
-    def __getitem__(self, idx):
-        if idx < self.len1:
-            return self.dataset1[idx]
-        else:
-            return self.dataset2[idx - self.len1]
+    row_images = []
+    for slice_idx in slices_to_show:
+        input_slice = input_np[..., slice_idx]
+        rec_slice = rec_np[..., slice_idx]
+        side_by_side = np.hstack([input_slice, rec_slice])
+        row_images.append(side_by_side)
+    
+    # Stack slices vertically
+    final_image = np.vstack(row_images)
+    
+    # Create save directory if not exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Save the image as PNG
+    save_path = os.path.join(save_dir, f"epoch-{epoch}_sub-{subject_id}_ses-{session_id}.png")
+    plt.imsave(save_path, final_image, cmap='gray')
+    
+    # Log to W&B
+    wandb.log({"comparison_input_recon": wandb.Image(save_path, caption=f"Epoch {epoch} - {subject_id} - {session_id}")})
+    
+    print(f"Saved and logged image: {save_path}")
 
 # === END: dataset definitions ===
 # for reproducibility purposes set a seed
@@ -337,11 +185,11 @@ if use_combined:
     cp_dataset = CPDataset(tsv_path="/home/andim/projects/def-bedelb/andim/hc-calgary-preschool/participants.tsv")
     
     combined_dataset = CombinedDataset(bcp_dataset, cp_dataset) 
-    train_loader = DataLoader(combined_dataset, batch_size=2, shuffle=True, num_workers=2)
+    train_loader = DataLoader(combined_dataset, batch_size=3, shuffle=True, num_workers=8)
 else:
     # BCP only
     bcp_dataset = BCPDataset(tsv_path="/home/andim/projects/def-bedelb/andim/hc-bcp/participants.tsv")
-    train_loader = DataLoader(bcp_dataset, batch_size=2, shuffle=True, num_workers=2)
+    train_loader = DataLoader(bcp_dataset, batch_size=3, shuffle=True, num_workers=8)
 
 # Print size for sanity check
 print("Dataset length:", len(train_loader.dataset))
@@ -357,16 +205,27 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using {device}")
 
 # +
-autoencoder = AutoencoderKL(
-    spatial_dims=3,
-    in_channels=1,
-    out_channels=1,
-    num_channels=(32, 64, 64),
-    latent_channels=3,
-    num_res_blocks=1,
-    norm_num_groups=16,
-    attention_levels=(False, False, True),
-)
+    # autoencoder = AutoencoderKL(
+    #     spatial_dims=3,
+    #     in_channels=1,
+    #     out_channels=1,
+    #     num_channels=(32, 64, 64),
+    #     latent_channels=3,
+    #     num_res_blocks=1,
+    #     norm_num_groups=16,
+    #     attention_levels=(False, False, True),
+    # )
+autoencoder = AutoencoderKL(spatial_dims=3, 
+                                in_channels=1, 
+                                out_channels=1, 
+                                latent_channels=3,
+                                num_channels=(64, 128, 128, 128),
+                                num_res_blocks=2, 
+                                norm_num_groups=32,
+                                norm_eps=1e-06,
+                                attention_levels=(False, False, False, False), 
+                                with_decoder_nonlocal_attn=False, 
+                                with_encoder_nonlocal_attn=False)
 autoencoder.to(device)
 
 
@@ -407,8 +266,9 @@ autoencoder_warm_up_n_epochs = 5
 # 3) Initialize wandb
 # --------------------------------------------------
 today_str = datetime.now().strftime("%Y%m%d_%H%M%S") 
+exp_name = 'exp_vq_vae'
 scratch_dir = os.environ.get("SCRATCH", "/scratch")  # Use $SCRATCH environment variable
-original_root_dir = os.path.join(scratch_dir, 'COMBINED', 'exp_vq_vae_fold0')
+original_root_dir = os.path.join(scratch_dir, 'COMBINED', exp_name)
 wandb_dir = os.path.join(original_root_dir, "wandb_logs")
 os.makedirs(wandb_dir, exist_ok=True)
 wandb.init(
@@ -417,7 +277,7 @@ wandb.init(
     mode = 'offline',
     dir=wandb_dir,
     config={
-        "batch_size": 2,
+        "batch_size": 3,
         "lr": 1e-4,
         "adv_weight": adv_weight,
         "perceptual_weight": perceptual_weight,
@@ -434,6 +294,9 @@ epoch_recon_loss_list = []
 epoch_gen_loss_list = []
 epoch_disc_loss_list = []
 
+# Initialize best reconstruction loss to a very high value
+best_recon_loss = float("inf")
+
 for epoch in range(n_epochs):
     autoencoder.train()
     discriminator.train()
@@ -446,6 +309,8 @@ for epoch in range(n_epochs):
     pbar = tqdm(train_loader, desc=f"Epoch [{epoch}/{n_epochs}]", ncols=120)
     for batch in pbar:
         images = batch["data"].to(device)  # shape [B, 1, X, Y, Z]
+        subject_id = batch["subject_id"][0]  # Assuming batch size > 0
+        session_id = batch["session_id"][0]
 
         # ----- Generator / Autoencoder step -----
         optimizer_g.zero_grad(set_to_none=True)
@@ -509,13 +374,13 @@ for epoch in range(n_epochs):
         "disc_loss": epoch_disc_loss,
     })
 
+    scratch_dir = os.environ.get("SCRATCH", "/scratch")  # Use $SCRATCH environment variable
+    original_root_dir = os.path.join(scratch_dir, 'COMBINED', exp_name)
+    # fold_specific_dir = os.path.join(original_root_dir, f"fold_{fold_idx}")
+    os.makedirs(original_root_dir, exist_ok=True)
+    
     # Every 5 epochs, save a checkpoint
     if epoch % 5 == 0 and epoch > 0:
-        scratch_dir = os.environ.get("SCRATCH", "/scratch")  # Use $SCRATCH environment variable
-        original_root_dir = os.path.join(scratch_dir, 'COMBINED', 'exp_vq_vae_fold0')
-        # fold_specific_dir = os.path.join(original_root_dir, f"fold_{fold_idx}")
-        os.makedirs(original_root_dir, exist_ok=True)
-
         # Build the filename path in that directory
         ckpt_filename = os.path.join(original_root_dir, f"autoencoder_epoch_{epoch}.pth")
 
@@ -524,32 +389,16 @@ for epoch in range(n_epochs):
         # (Optional) If you want wandb to store this file too:
         wandb.save(ckpt_filename)
 
-    # Log image slices every few epochs
-    if epoch % 5 == 0:
-        idx = 0
-        # images and reconstruction both have shape [B, 1, X, Y, Z]
-        input_np = images[idx, 0].detach().cpu().numpy()
-        rec_np   = reconstruction[idx, 0].detach().cpu().numpy()
+        # Save images 
+        save_and_log_image(epoch, images, reconstruction, subject_id, session_id, original_root_dir)
 
-        # Pick three z-slices to visualize
-        zdim = input_np.shape[-1]   # the size of the Z dimension
-        slices_to_show = [zdim // 4, zdim // 2, 3 * zdim // 4]
-
-        row_images = []
-        for slice_idx in slices_to_show:
-            # Extract the same slice along Z from input and reconstruction
-            input_slice = input_np[..., slice_idx]
-            rec_slice   = rec_np[..., slice_idx]
-
-            # Place them side by side (horizontal stack)
-            side_by_side = np.hstack([input_slice, rec_slice])
-            row_images.append(side_by_side)
-
-        # Stack each slice vertically so we end up with a single image to log
-        final_image = np.vstack(row_images)
-
-        # Log this image to W&B
-        wandb.log({"comparison_3_slices": wandb.Image(final_image, caption=f"Epoch {epoch}")})
+    # Save best model based on lowest reconstruction loss
+    if epoch_recon_loss < best_recon_loss:
+        best_recon_loss = epoch_recon_loss  # Update best loss
+        best_ckpt_filename = os.path.join(original_root_dir, "best.pth")
+        torch.save(autoencoder.state_dict(), best_ckpt_filename)
+        wandb.save(best_ckpt_filename)
+        print(f"New best model saved with recon loss {best_recon_loss:.6f} at epoch {epoch}")
 
 
 # --------------------------------------------------
