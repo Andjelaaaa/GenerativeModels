@@ -5,16 +5,7 @@ import torch
 from torch.utils.data import Dataset
 
 # === MONAI/generative imports
-from monai.transforms import (
-    Compose,
-    LoadImaged,
-    EnsureChannelFirstd,
-    Orientationd,
-    Spacingd,
-    ScaleIntensityRangePercentilesd,
-    CropForegroundd,
-    Resized
-)
+from monai import transforms
 from monai.data import DataLoader
 
 def create_bcp_records(tsv_path: str):
@@ -225,15 +216,26 @@ def threshold_at_zero(x):
 #         transforms.ScaleIntensityD(minv=0, maxv=1, keys=['image'])
 #     ])
 
-def get_monai_transforms(final_size=(64, 128, 128)):
-    return Compose([
-        LoadImaged(keys="data"),
-        EnsureChannelFirstd(keys="data"),
-        Orientationd(keys="data", axcodes="RAS"),
-        Spacingd(keys="data", pixdim=(1.0, 1.0, 1.0), mode="bilinear"),
-        CropForegroundd(keys="data", source_key="data", select_fn=threshold_at_zero),
-        Resized(keys="data", spatial_size=final_size, mode=["area"]),
-        ScaleIntensityRangePercentilesd(keys="data", lower=0, upper=99.5, b_min=0, b_max=1),
+# def get_monai_transforms(final_size=(64, 128, 128)):
+#     return Compose([
+#         LoadImaged(keys="data"),
+#         EnsureChannelFirstd(keys="data"),
+#         Orientationd(keys="data", axcodes="RAS"),
+#         Spacingd(keys="data", pixdim=(1.0, 1.0, 1.0), mode="bilinear"),
+#         CropForegroundd(keys="data", source_key="data", select_fn=threshold_at_zero),
+#         Resized(keys="data", spatial_size=final_size, mode=["area"]),
+#         ScaleIntensityRangePercentilesd(keys="data", lower=0, upper=99.5, b_min=0, b_max=1),
+#     ])
+
+def get_monai_transforms():
+    return transforms.Compose([
+        transforms.LoadImaged(keys="data"),
+        transforms.EnsureChannelFirstD(keys=['data']),
+        transforms.Orientationd(keys="data", axcodes="RAS"),
+        transforms.SpacingD(pixdim=1, keys=['data']),
+        transforms.CropForegroundd(keys="data", source_key="data", select_fn=lambda x: x>0, margin=20),
+        transforms.ResizeWithPadOrCropD(spatial_size=(160, 160, 168), mode='minimum', keys=['data']),
+        transforms.ScaleIntensityD(minv=0, maxv=1, keys=['data']),
     ])
 
 class BCPDataset(Dataset):

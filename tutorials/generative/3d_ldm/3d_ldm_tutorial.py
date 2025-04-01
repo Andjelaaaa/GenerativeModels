@@ -73,38 +73,81 @@ from generative.inferers import LatentDiffusionInferer
 import pandas as pd
 import glob
 from torch.utils.data import Dataset
+from datasets.datasets import BCPDataset, CPDataset
+from datasets.combined_dataset import CombinedDataset
 
-def save_and_log_image(epoch, images, reconstruction, subject_id, session_id, save_dir):
-    """Save slices as a PNG and log to Weights & Biases (W&B) with subject/session info."""
+def save_and_log_image(
+    epoch,
+    images,
+    reconstruction,
+    subject_id,
+    session_id,
+    save_dir
+):
+    """
+    Display + log orthogonal slices (axial, coronal, sagittal)
+    of 'images' vs. 'reconstruction' to Weights & Biases (wandb).
+
+    Args:
+        epoch (int): current epoch or step
+        images (Tensor): shape [B, C, D, H, W] or [B, 1, D, H, W]
+        reconstruction (Tensor): same shape as 'images'
+        subject_id (str): subject ID for naming
+        session_id (str): session ID for naming
+        save_dir (str): directory to save the figure as PNG
+    """
     idx = 0  # Use the first sample in batch
-    input_np = images[idx, 0].detach().cpu().numpy()
+    # Extract a 3D volume from [B, C, D, H, W]
+    img_np = images[idx, 0].detach().cpu().numpy()
     rec_np = reconstruction[idx, 0].detach().cpu().numpy()
-    
-    # Pick three z-slices to visualize
-    zdim = input_np.shape[-1]
-    slices_to_show = [zdim // 4, zdim // 2, 3 * zdim // 4]
-    
-    row_images = []
-    for slice_idx in slices_to_show:
-        input_slice = input_np[..., slice_idx]
-        rec_slice = rec_np[..., slice_idx]
-        side_by_side = np.hstack([input_slice, rec_slice])
-        row_images.append(side_by_side)
-    
-    # Stack slices vertically
-    final_image = np.vstack(row_images)
-    
-    # Create save directory if not exists
+
+    # Create a 2x3 figure
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(7, 5))
+    for row in ax:
+        for col in row:
+            col.set_axis_off()
+
+    # ========== Original Image Slices ========== #
+    # Axial slice
+    ax[0, 0].set_title('original sagittal', color='cyan')
+    ax[0, 0].imshow(np.rot90(img_np[img_np.shape[0] // 2, :, :]), cmap='gray')
+
+    # Coronal slice
+    ax[0, 1].set_title('original coronal', color='cyan')
+    ax[0, 1].imshow(np.rot90(img_np[:, img_np.shape[1] // 2, :]), cmap='gray')
+
+    # Sagittal slice
+    ax[0, 2].set_title('original axial', color='cyan')
+    ax[0, 2].imshow(np.rot90(img_np[:, :, img_np.shape[2] // 2]), cmap='gray')
+
+    # ========== Reconstructed Image Slices ========== #
+    ax[1, 0].set_title('recon sagittal', color='magenta')
+    ax[1, 0].imshow(np.rot90(rec_np[rec_np.shape[0] // 2, :, :]), cmap='gray')
+
+    ax[1, 1].set_title('recon coronal', color='magenta')
+    ax[1, 1].imshow(np.rot90(rec_np[:, rec_np.shape[1] // 2, :]), cmap='gray')
+
+    ax[1, 2].set_title('recon axial', color='magenta')
+    ax[1, 2].imshow(np.rot90(rec_np[:, :, rec_np.shape[2] // 2]), cmap='gray')
+
+    plt.tight_layout()
+
+    # Ensure the save directory exists
     os.makedirs(save_dir, exist_ok=True)
-    
-    # Save the image as PNG
-    save_path = os.path.join(save_dir, f"epoch-{epoch}_sub-{subject_id}_ses-{session_id}.png")
-    plt.imsave(save_path, final_image, cmap='gray')
-    
-    # Log to W&B
-    wandb.log({"comparison_input_recon": wandb.Image(save_path, caption=f"Epoch {epoch} - {subject_id} - {session_id}")})
-    
-    print(f"Saved and logged image: {save_path}")
+    filename = f"epoch-{epoch}_sub-{subject_id}_ses-{session_id}_ortho.png"
+    save_path = os.path.join(save_dir, filename)
+    fig.savefig(save_path, bbox_inches='tight')
+    plt.close(fig)
+
+    # Log to Weights & Biases
+    wandb.log({
+        "orth_slices": wandb.Image(
+            save_path,
+            caption=f"Epoch {epoch} - {subject_id} - {session_id}"
+        )
+    })
+    print(f"Saved and logged orthogonal slices -> {save_path}")
 
 # === END: dataset definitions ===
 # for reproducibility purposes set a seed
@@ -185,11 +228,11 @@ if use_combined:
     cp_dataset = CPDataset(tsv_path="/home/andim/projects/def-bedelb/andim/hc-calgary-preschool/participants.tsv")
     
     combined_dataset = CombinedDataset(bcp_dataset, cp_dataset) 
-    train_loader = DataLoader(combined_dataset, batch_size=3, shuffle=True, num_workers=8)
+    train_loader = DataLoader(combined_dataset, batch_size=1, shuffle=True, num_workers=8)
 else:
     # BCP only
     bcp_dataset = BCPDataset(tsv_path="/home/andim/projects/def-bedelb/andim/hc-bcp/participants.tsv")
-    train_loader = DataLoader(bcp_dataset, batch_size=3, shuffle=True, num_workers=8)
+    train_loader = DataLoader(bcp_dataset, batch_size=1, shuffle=True, num_workers=8)
 
 # Print size for sanity check
 print("Dataset length:", len(train_loader.dataset))
@@ -215,14 +258,26 @@ print(f"Using {device}")
     #     norm_num_groups=16,
     #     attention_levels=(False, False, True),
     # )
+# autoencoder = AutoencoderKL(spatial_dims=3, 
+#                                 in_channels=1, 
+#                                 out_channels=1, 
+#                                 latent_channels=3,
+#                                 num_channels=(64, 128, 128, 128),
+#                                 num_res_blocks=2, 
+#                                 norm_num_groups=32,
+#                                 norm_eps=1e-06,
+#                                 attention_levels=(False, False, False, False), 
+#                                 with_decoder_nonlocal_attn=False, 
+#                                 with_encoder_nonlocal_attn=False)
+
 autoencoder = AutoencoderKL(spatial_dims=3, 
                                 in_channels=1, 
                                 out_channels=1, 
                                 latent_channels=3,
                                 num_channels=(64, 128, 128, 128),
-                                num_res_blocks=2, 
-                                norm_num_groups=32,
-                                norm_eps=1e-06,
+                                num_res_blocks=1, 
+                                norm_num_groups=16,
+                                norm_eps=1e-06,     
                                 attention_levels=(False, False, False, False), 
                                 with_decoder_nonlocal_attn=False, 
                                 with_encoder_nonlocal_attn=False)
@@ -266,7 +321,7 @@ autoencoder_warm_up_n_epochs = 5
 # 3) Initialize wandb
 # --------------------------------------------------
 today_str = datetime.now().strftime("%Y%m%d_%H%M%S") 
-exp_name = 'exp_vq_vae'
+exp_name = 'exp_vq_vae_bigger_imgs'
 scratch_dir = os.environ.get("SCRATCH", "/scratch")  # Use $SCRATCH environment variable
 original_root_dir = os.path.join(scratch_dir, 'COMBINED', exp_name)
 wandb_dir = os.path.join(original_root_dir, "wandb_logs")
@@ -277,7 +332,7 @@ wandb.init(
     mode = 'offline',
     dir=wandb_dir,
     config={
-        "batch_size": 3,
+        "batch_size": 1,
         "lr": 1e-4,
         "adv_weight": adv_weight,
         "perceptual_weight": perceptual_weight,

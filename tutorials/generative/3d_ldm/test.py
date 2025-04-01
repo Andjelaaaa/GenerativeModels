@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import DataLoader, random_split
 import nibabel as nib
 import numpy as np
+import argparse
 
 # Example: Adjust these imports to your actual code structure
 from generative.networks.nets import AutoencoderKL, DiffusionModelUNet, PatchDiscriminator
@@ -86,16 +87,27 @@ def reconstruct_combined_dataset(
     # ------------------------------------------------------------------
     # 2) Build/Load Model
     # ------------------------------------------------------------------
-    model = AutoencoderKL(
-        spatial_dims=3,
-        in_channels=1,
-        out_channels=1,
-        num_channels=(32, 64, 64),  # Must match training!
-        latent_channels=3,
-        num_res_blocks=1,
-        norm_num_groups=16,
-        attention_levels=(False, False, True),
-    )
+    # model = AutoencoderKL(
+    #     spatial_dims=3,
+    #     in_channels=1,
+    #     out_channels=1,
+    #     num_channels=(32, 64, 64),  # Must match training!
+    #     latent_channels=3,
+    #     num_res_blocks=1,
+    #     norm_num_groups=16,
+    #     attention_levels=(False, False, True),
+    # )
+    model = AutoencoderKL(spatial_dims=3, 
+                                in_channels=1, 
+                                out_channels=1, 
+                                latent_channels=3,
+                                num_channels=(64, 128, 128, 128),
+                                num_res_blocks=1, 
+                                norm_num_groups=16,
+                                norm_eps=1e-06,     
+                                attention_levels=(False, False, False, False), 
+                                with_decoder_nonlocal_attn=False, 
+                                with_encoder_nonlocal_attn=False)
     state_dict = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(state_dict)
     model.to(device)
@@ -152,12 +164,38 @@ def reconstruct_combined_dataset(
 
 # Example usage if calling this directly:
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run reconstructions with trained model.")
+    parser.add_argument("--exp_name", required=True, type=str, help="Experiment name")
+    parser.add_argument("--dataset_name", default="COMBINED", type=str, help="Dataset name")
+    # parser.add_argument("--fold_idx", default=0, type=int, help="Fold index")
+    # parser.add_argument("--checkpoint_path", required=True, type=str, help="Path to model checkpoint (.pth)")
+    # parser.add_argument("--scratch_dir", required=True, type=str, help="Base directory for saving results")
+    # parser.add_argument("--dataset_base_path", required=True, type=str, help="Path to the dataset root")
+    # parser.add_argument("--fraction", default=0.1, type=float, help="Fraction of dataset to reconstruct")
+    # parser.add_argument("--batch_size", default=1, type=int, help="Batch size")
+    # parser.add_argument("--device", default="cuda:0", type=str, help="Device for inference")
+
+    args = parser.parse_args()
+
+    exp_name = args.exp_name
+    dataset_name = args.dataset_name
+    # reconstruct_combined_dataset(
+    #     exp_name=args.exp_name,
+    #     dataset_name=args.dataset_name,
+    #     fold_idx=args.fold_idx,
+    #     checkpoint_path=args.checkpoint_path,
+    #     scratch_dir=args.scratch_dir,
+    #     dataset_base_path=args.dataset_base_path,
+    #     fraction=args.fraction,
+    #     batch_size=args.batch_size,
+    #     device=args.device
+    # )
     reconstruct_combined_dataset(
-        exp_name="exp_vq_vae",
-        dataset_name="COMBINED",
+        exp_name=args.exp_name,
+        dataset_name=args.dataset_name,
         fold_idx=1,
         # checkpoint_path="/home/andim/scratch/COMBINED/exp_vq_vae_fold0/autoencoder_epoch_65.pth",
-        checkpoint_path="/home/andim/scratch/COMBINED/exp_vq_vae/best.pth",
+        checkpoint_path=f"/home/andim/scratch/{dataset_name}/{exp_name}/best.pth",
         scratch_dir="/home/andim/scratch",
         dataset_base_path="/home/andim/projects/def-bedelb/andim",
         fraction=0.1,       # 10%
